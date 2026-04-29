@@ -58,30 +58,34 @@ func Run(ctx context.Context, fns iter.Seq[Preemptable]) error {
 	ctx = context.WithValue(ctx, awaitStateKey{}, s)
 	errs := errors.L()
 
-	// Waits for the currently running goroutine to either
-	// complete (donec)
-	// yield via Await (awaitc), or for the context to be
-	// cancelled. Returns false if the context was cancelled.
+	// Increment on starting fn, decrement when it's done.
+	inflight := 0
+
+	// Marks the keys a finished goroutine produced as completed
+	// and moves any goroutines waiting on those keys into s.resumable.
+	recordDone := func(keys []string) {
+		inflight--
+		for _, key := range keys {
+			s.completed[key] = struct{}{}
+			waitingForKey, found := s.waiting[key]
+			if found {
+				s.resumable = append(s.resumable, waitingForKey...)
+			}
+			delete(s.waiting, key)
+		}
+	}
+
+	// Waits for the currently running goroutine to either complete (donec)
+	// or yield via Await (awaitc). Returns false if the context was cancelled;
+	// the drain loop below picks up whatever the goroutine eventually sends.
 	waitForNextMessage := func() bool {
 		select {
 		case keys := <-s.donec:
-			for _, key := range keys {
-				s.completed[key] = struct{}{}
-				waitingForKey, found := s.waiting[key]
-				if found {
-					s.resumable = append(s.resumable, waitingForKey...)
-				}
-				delete(s.waiting, key)
-			}
+			recordDone(keys)
 			return true
 		case <-s.awaitc:
 			return true
 		case <-ctx.Done():
-			// Drain the in-flight goroutine.
-			select {
-			case <-s.donec:
-			case <-s.awaitc:
-			}
 			return false
 		}
 	}
@@ -93,35 +97,55 @@ func Run(ctx context.Context, fns iter.Seq[Preemptable]) error {
 			errs.Append(err)
 			s.donec <- key
 		}()
+		inflight++
 
 		if !waitForNextMessage() {
 			cancelled = true
 			break
 		}
-
-		for len(s.resumable) > 0 {
-			nextResumable := s.resumable[0]
-			s.resumable = s.resumable[1:]
-			nextResumable <- nil
-			if !waitForNextMessage() {
-				cancelled = true
-				for _, ch := range s.resumable {
-					ch <- ctx.Err()
-					<-s.donec
-				}
-				break
-			}
-		}
-		if cancelled {
-			break
-		}
 	}
 
-	// Unblock all waiting goroutines.
-	for _, waitingForKey := range s.waiting {
-		for _, resumeSignal := range waitingForKey {
-			resumeSignal <- errors.E(ErrUnresolvable)
-			<-s.donec
+	// Drain remaining work. Each iteration picks one blocked goroutine and unblocks it.
+	// After unblocking, the goroutine may finish (donec) or issue another Await.
+	for inflight > 0 {
+		var ch chan error
+
+		// Stays nil by default so Await returns success.
+		var resumeVal error
+
+		if n := len(s.resumable); n > 0 {
+			// Entries in s.resumable are goroutines whose awaited key was produced.
+			ch, s.resumable = s.resumable[n-1], s.resumable[:n-1]
+		} else {
+			// Entries left in s.waiting are goroutines whose key never came.
+			for k, ws := range s.waiting {
+				if n := len(ws); n > 0 {
+					ch, s.waiting[k] = ws[n-1], ws[:n-1]
+					if n == 1 {
+						delete(s.waiting, k)
+					}
+					break
+				}
+			}
+			resumeVal = errors.E(ErrUnresolvable)
+		}
+
+		if cancelled {
+			// Cancel overrides other errors.
+			resumeVal = ctx.Err()
+		}
+
+		if ch != nil {
+			ch <- resumeVal
+		}
+
+		select {
+		case keys := <-s.donec:
+			recordDone(keys)
+		case <-s.awaitc:
+			// New waiter is in s.waiting, next iteration picks it up.
+		case <-ctx.Done():
+			cancelled = true
 		}
 	}
 

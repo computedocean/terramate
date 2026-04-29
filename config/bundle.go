@@ -24,6 +24,7 @@ import (
 	"github.com/terramate-io/terramate/hcl/ast"
 	"github.com/terramate-io/terramate/hcl/eval"
 	"github.com/terramate-io/terramate/hcl/info"
+	"github.com/terramate-io/terramate/lets"
 	"github.com/terramate-io/terramate/project"
 	"github.com/terramate-io/terramate/typeschema"
 )
@@ -400,10 +401,18 @@ func EvalBundle(ctx context.Context, root *Root, resolveAPI resolve.API, evalctx
 
 	evalctx = evalctx.ChildContext()
 
+	filePath := inst.Info.Path()
 	bundleNS := map[string]cty.Value{
 		"class":       cty.StringVal(evaluated.DefinitionMetadata.Class),
 		"uuid":        uuidVal,
 		"environment": MakeEnvObject(evaluated.Environment),
+		"file": cty.ObjectVal(map[string]cty.Value{
+			"path": cty.ObjectVal(map[string]cty.Value{
+				"absolute": cty.StringVal(inst.Info.HostPath()),
+				"basename": cty.StringVal(path.Base(filePath.String())),
+				"relative": cty.StringVal(filePath.String()),
+			}),
+		}),
 	}
 
 	evalctx.SetNamespace("bundle", bundleNS)
@@ -428,6 +437,10 @@ func EvalBundle(ctx context.Context, root *Root, resolveAPI resolve.API, evalctx
 		return nil, err
 	}
 
+	if err := LoadBundleLets(evalctx, defineBundle.Lets); err != nil {
+		return nil, err
+	}
+
 	if defineBundle.Alias != nil {
 		evaluated.Alias, err = EvalString(evalctx, defineBundle.Alias.Expr, "alias")
 		if err != nil {
@@ -438,7 +451,7 @@ func EvalBundle(ctx context.Context, root *Root, resolveAPI resolve.API, evalctx
 		evaluated.Alias = fmt.Sprintf("%s:%s", inst.Workdir.String(), inst.Name)
 	}
 
-	evaluated.Exports, err = evalBundleExports(evalctx, inst, defineBundle, evaluated.Inputs)
+	evaluated.Exports, err = evalBundleExports(evalctx, defineBundle)
 	if err != nil {
 		return nil, err
 	}
@@ -625,33 +638,9 @@ func extractInputVars(rootNS string, attr *ast.Attribute) []string {
 	return results
 }
 
-func evalBundleExports(evalctx *eval.Context, inst *hcl.Bundle, def *hcl.DefineBundle, inputs map[string]cty.Value) (map[string]cty.Value, error) {
-	evalctx = evalctx.ChildContext()
-
+func evalBundleExports(evalctx *eval.Context, def *hcl.DefineBundle) (map[string]cty.Value, error) {
 	exports := map[string]cty.Value{}
-
 	errs := errors.L()
-	filePath := inst.Info.Path()
-
-	filePathNS := cty.ObjectVal(map[string]cty.Value{
-		"absolute": cty.StringVal(inst.Info.HostPath()),
-		"basename": cty.StringVal(path.Base(filePath.String())),
-		"relative": cty.StringVal(filePath.String()),
-	})
-	fileNS := cty.ObjectVal(map[string]cty.Value{
-		"path": filePathNS,
-	})
-
-	// For the exports evaluation, move namespace "global" to "bundle.global".
-	globalsNamespace, _ := evalctx.GetNamespace("global")
-
-	bundleInputsNamespace := map[string]cty.Value{
-		"input":  cty.ObjectVal(inputs),
-		"global": globalsNamespace,
-		"file":   fileNS,
-	}
-	evalctx.SetNamespace("bundle", bundleInputsNamespace)
-	evalctx.SetNamespace("global", map[string]cty.Value{})
 
 	for name, exportDef := range def.Exports {
 		val, err := evalctx.Eval(exportDef.Value.Expr)
@@ -1095,4 +1084,28 @@ func tryEvaluateExpr(evalctx *eval.Context, expr hhcl.Expression) (cty.Value, bo
 	// Fall back to raw tokens as a string.
 	tokens := ast.TokensForExpression(expr).Bytes()
 	return cty.StringVal(strings.TrimSpace(string(tokens))), false
+}
+
+// LoadBundleLets evaluates the bundle's lets block and exposes the result as `bundle.let.<name>`.
+// Any inherited "let" namespace is discarded.
+func LoadBundleLets(evalctx *eval.Context, letBlock *ast.MergedBlock) error {
+	evalctx.SetNamespace("let", map[string]cty.Value{})
+
+	if err := lets.Load(letBlock, evalctx); err != nil {
+		return err
+	}
+
+	letsVal, _ := evalctx.GetNamespace("let")
+
+	var bundleMap map[string]cty.Value
+	if bundleNS, ok := evalctx.GetNamespace("bundle"); ok {
+		bundleMap = bundleNS.AsValueMap()
+	} else {
+		bundleMap = map[string]cty.Value{}
+	}
+	bundleMap["let"] = letsVal
+	evalctx.SetNamespace("bundle", bundleMap)
+
+	evalctx.DeleteNamespace("let")
+	return nil
 }

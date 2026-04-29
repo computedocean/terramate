@@ -94,6 +94,10 @@ func AssertTerramateConfig(t *testing.T, got, want *hcl.Config) {
 		cmpopts.IgnoreFields(hcl.RunEnv{}, "Attributes"), // because Expr and Range
 		cmpopts.IgnoreFields(hcl.Config{}, "Generate"),
 
+		// DefineBundle.Lets is an *ast.MergedBlock holding raw HCL attributes/expressions.
+		// Same reasoning as Globals/Asserts/Scripts above.
+		cmpopts.IgnoreFields(hcl.DefineBundle{}, "Lets"),
+
 		// HCL attributes contain Expr (expressions) and Range fields that cannot
 		// be meaningfully compared with cmp.Diff (expressions contain cty.Value
 		// with unexported fields). We only care about attribute Name matching.

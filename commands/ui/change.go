@@ -95,6 +95,10 @@ func NewCreateChange(
 		return Change{}, err
 	}
 
+	if err := config.LoadBundleLets(schemactx.Evalctx, bde.Define.Lets); err != nil {
+		return Change{}, err
+	}
+
 	// We check if the bundle has an explicit alias and add it to the context if yes.
 	alias, err := setupExplicitBundleAlias(schemactx.Evalctx, bde.Define)
 	if err != nil {
@@ -202,6 +206,10 @@ func NewReconfigChange(
 		return Change{}, err
 	}
 
+	if err := config.LoadBundleLets(schemactx.Evalctx, bde.Define.Lets); err != nil {
+		return Change{}, err
+	}
+
 	// This will only be set if there is an explicit alias.
 	newAlias, err := setupExplicitBundleAlias(schemactx.Evalctx, bde.Define)
 	if err != nil {
@@ -275,6 +283,10 @@ func NewPromoteChange(
 		return Change{}, err
 	}
 	if err := checkBundleRefsResolved(inputDefs, allValues); err != nil {
+		return Change{}, err
+	}
+
+	if err := config.LoadBundleLets(schemactx.Evalctx, bde.Define.Lets); err != nil {
 		return Change{}, err
 	}
 
