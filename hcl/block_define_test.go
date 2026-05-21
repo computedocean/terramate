@@ -5,6 +5,7 @@ package hcl_test
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 
 	hhcl "github.com/terramate-io/hcl/v2"
@@ -13,6 +14,7 @@ import (
 	"github.com/terramate-io/terramate/hcl"
 	"github.com/terramate-io/terramate/hcl/ast"
 	"github.com/terramate-io/terramate/test"
+	errtest "github.com/terramate-io/terramate/test/errors"
 	. "github.com/terramate-io/terramate/test/hclwrite/hclutils"
 )
 
@@ -1056,6 +1058,192 @@ func TestDefineBundleBlockOKCases(t *testing.T) {
 		},
 	} {
 		testParser(t, tc)
+	}
+}
+
+func TestDefineBundleLets(t *testing.T) {
+	type letsCase struct {
+		name      string
+		input     []cfgfile
+		wantAttrs []string
+		wantErrs  []error
+	}
+
+	for _, tc := range []letsCase{
+		{
+			name: "nested form: define bundle { lets { ... } }",
+			input: []cfgfile{
+				{filename: "defines.tm", body: Block("define",
+					Labels("bundle"),
+					Lets(
+						Str("a", "1"),
+						Str("b", "2"),
+					),
+				).String()},
+			},
+			wantAttrs: []string{"a", "b"},
+		},
+		{
+			name: "mid form: define { bundle \"lets\" { ... } }",
+			input: []cfgfile{
+				{filename: "defines.tm", body: Block("define",
+					Block("bundle",
+						Labels("lets"),
+						Str("a", "1"),
+						Str("b", "2"),
+					),
+				).String()},
+			},
+			wantAttrs: []string{"a", "b"},
+		},
+		{
+			name: "labeled form: define \"bundle\" \"lets\" { ... }",
+			input: []cfgfile{
+				{filename: "defines.tm", body: Block("define",
+					Labels("bundle", "lets"),
+					Str("a", "1"),
+					Str("b", "2"),
+				).String()},
+			},
+			wantAttrs: []string{"a", "b"},
+		},
+		{
+			name: "nested form merges across files",
+			input: []cfgfile{
+				{filename: "a.tm", body: Block("define",
+					Labels("bundle"),
+					Lets(Str("a", "1")),
+				).String()},
+				{filename: "b.tm", body: Block("define",
+					Labels("bundle"),
+					Lets(Str("b", "2")),
+				).String()},
+			},
+			wantAttrs: []string{"a", "b"},
+		},
+		{
+			name: "labeled form merges across files",
+			input: []cfgfile{
+				{filename: "a.tm", body: Block("define",
+					Labels("bundle", "lets"),
+					Str("a", "1"),
+				).String()},
+				{filename: "b.tm", body: Block("define",
+					Labels("bundle", "lets"),
+					Str("b", "2"),
+				).String()},
+			},
+			wantAttrs: []string{"a", "b"},
+		},
+		{
+			name: "nested and labeled forms merge into a single lets block",
+			input: []cfgfile{
+				{filename: "nested.tm", body: Block("define",
+					Labels("bundle"),
+					Lets(Str("a", "1")),
+				).String()},
+				{filename: "labeled.tm", body: Block("define",
+					Labels("bundle", "lets"),
+					Str("b", "2"),
+				).String()},
+			},
+			wantAttrs: []string{"a", "b"},
+		},
+		{
+			name: "duplicate attribute across forms is rejected",
+			input: []cfgfile{
+				{filename: "nested.tm", body: Block("define",
+					Labels("bundle"),
+					Lets(Str("a", "1")),
+				).String()},
+				{filename: "labeled.tm", body: Block("define",
+					Labels("bundle", "lets"),
+					Str("a", "2"),
+				).String()},
+			},
+			wantErrs: []error{errors.E(hcl.ErrTerramateSchema)},
+		},
+		{
+			name: "duplicate attribute within nested form (same dir) is rejected",
+			input: []cfgfile{
+				{filename: "a.tm", body: Block("define",
+					Labels("bundle"),
+					Lets(Str("a", "1")),
+				).String()},
+				{filename: "b.tm", body: Block("define",
+					Labels("bundle"),
+					Lets(Str("a", "2")),
+				).String()},
+			},
+			wantErrs: []error{errors.E(hcl.ErrTerramateSchema)},
+		},
+		{
+			name: "lets block coexists with other bundle sub-blocks",
+			input: []cfgfile{
+				{filename: "defines.tm", body: Block("define",
+					Labels("bundle"),
+					Block("metadata",
+						Str("class", "bundle_class"),
+						Str("name", "bundle_name"),
+						Str("version", "1.0.0"),
+					),
+					Lets(Str("a", "1")),
+				).String()},
+			},
+			wantAttrs: []string{"a"},
+		},
+		{
+			name: "lets block rejects unknown sub-block type",
+			input: []cfgfile{
+				{filename: "defines.tm", body: Block("define",
+					Labels("bundle"),
+					Lets(
+						Block("notmap"),
+					),
+				).String()},
+			},
+			wantErrs: []error{errors.E(hcl.ErrUnrecognizedBlock)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			configsDir := test.TempDir(t)
+			for _, f := range tc.input {
+				path := filepath.Join(configsDir, f.filename)
+				dir := filepath.Dir(path)
+				name := filepath.Base(path)
+				test.WriteFile(t, dir, name, f.body)
+			}
+
+			got, err := parse(testcase{
+				rootdir:  configsDir,
+				parsedir: configsDir,
+				input:    tc.input,
+			})
+			errtest.AssertErrorList(t, err, tc.wantErrs)
+			if len(tc.wantErrs) > 0 {
+				return
+			}
+
+			if len(got.Defines) != 1 || got.Defines[0].Bundle == nil {
+				t.Fatalf("expected exactly one parsed bundle, got: %+v", got.Defines)
+			}
+			lets := got.Defines[0].Bundle.Lets
+			if lets == nil {
+				t.Fatal("bundle.Lets is nil; expected initialized merged block")
+			}
+
+			gotAttrs := make([]string, 0, len(lets.Attributes))
+			for name := range lets.Attributes {
+				gotAttrs = append(gotAttrs, name)
+			}
+			slices.Sort(gotAttrs)
+			slices.Sort(tc.wantAttrs)
+			if !slices.Equal(gotAttrs, tc.wantAttrs) {
+				t.Fatalf("lets attribute names mismatch:\n got:  %v\n want: %v", gotAttrs, tc.wantAttrs)
+			}
+		})
 	}
 }
 

@@ -37,6 +37,7 @@ type Component struct {
 	FromBundleSource string
 
 	// In this case component comes from a bundle, this stores the values of the `bundle.` object.
+	// Bundle-level lets are exposed as `bundle.lets.<name>` within this object.
 	BundleObject *cty.Value
 }
 

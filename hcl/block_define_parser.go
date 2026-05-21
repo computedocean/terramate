@@ -58,9 +58,9 @@ type DefineComponent struct {
 
 // DefineBundle represents a bundle defined in the "define" block.
 type DefineBundle struct {
-	Alias *ast.Attribute
-
+	Alias        *ast.Attribute
 	Metadata     Metadata
+	Lets         *ast.MergedBlock
 	Stacks       map[string]*DefineStack
 	Inputs       map[string]*DefineInput
 	Exports      map[string]*DefineExport
@@ -213,6 +213,7 @@ func newDefineComponent() *DefineComponent {
 
 func newDefineBundle() *DefineBundle {
 	return &DefineBundle{
+		Lets:    ast.NewMergedBlock("lets", []string{}),
 		Stacks:  make(map[string]*DefineStack),
 		Inputs:  make(map[string]*DefineInput),
 		Exports: make(map[string]*DefineExport),
@@ -301,11 +302,16 @@ func (d *DefineBlockParser) Parse(p *TerramateParser, label ast.LabelBlockType, 
 					return err
 				}
 
+			case "lets":
+				if err := setLets(define.Bundle.Lets, block); err != nil {
+					return err
+				}
+
 			default:
 				return errors.E(
 					ErrUnrecognizedDefineSubBlock,
 					block.RawOrigins[0].LabelRanges(),
-					`unexpected label %q, expected "metadata", "scaffolding" or "environments"`,
+					`unexpected label %q, expected "metadata", "scaffolding", "environments" or "lets"`,
 					label.Labels[1],
 				)
 			}
@@ -679,11 +685,22 @@ func parseDefineBundleBlock(label ast.LabelBlockType, block *ast.MergedBlock, re
 				if err := parseDefineEnvironmentsBlock(subBlock, &ret.Environments); err != nil {
 					return err
 				}
+			case "lets":
+				if labels.NumLabels != 0 {
+					return errors.E(
+						subBlock.RawOrigins[0].LabelRanges(),
+						`unexpected label %q, expected no labels`,
+						labels.Labels[0],
+					)
+				}
+				if err := setLets(ret.Lets, subBlock); err != nil {
+					return err
+				}
 			default:
 				return errors.E(
 					ErrUnrecognizedDefineSubBlock,
 					subBlock.RawOrigins[0].DefRange(),
-					`unexpected block type %q, expected "metadata", "stack", "input", "export", "scaffolding", "environments" or "uses schemas"`,
+					`unexpected block type %q, expected "metadata", "stack", "input", "export", "scaffolding", "environments", "lets" or "uses schemas"`,
 					subBlock.Type,
 				)
 			}
@@ -700,6 +717,10 @@ func parseDefineBundleBlock(label ast.LabelBlockType, block *ast.MergedBlock, re
 			}
 		case "environments":
 			if err := parseDefineEnvironmentsBlock(block, &ret.Environments); err != nil {
+				return err
+			}
+		case "lets":
+			if err := setLets(ret.Lets, block); err != nil {
 				return err
 			}
 		case "stack":
@@ -720,7 +741,7 @@ func parseDefineBundleBlock(label ast.LabelBlockType, block *ast.MergedBlock, re
 		default:
 			return errors.E(
 				block.RawOrigins[0].DefRange(),
-				"unexpected block type %q, expected 'metadata', 'input', 'export', 'stack', 'scaffolding' or 'environments'",
+				"unexpected block type %q, expected 'metadata', 'input', 'export', 'stack', 'lets', 'scaffolding' or 'environments'",
 				block.Type,
 			)
 		}
@@ -764,6 +785,36 @@ func parseDefineBundleBlock(label ast.LabelBlockType, block *ast.MergedBlock, re
 		)
 	}
 	return nil
+}
+
+func setLets(target *ast.MergedBlock, source *ast.MergedBlock) error {
+	if err := validateLets(source); err != nil {
+		return err
+	}
+	errs := errors.L()
+	for _, attr := range source.Attributes {
+		if existing, ok := target.Attributes[attr.Name]; ok {
+			errs.Append(errors.E(
+				ErrTerramateSchema,
+				attr.NameRange,
+				`duplicate lets attribute %q (first defined at %s)`,
+				attr.Name, existing.Range.String(),
+			))
+			continue
+		}
+		target.Attributes[attr.Name] = attr
+	}
+	for lb, sub := range source.Blocks {
+		existing, ok := target.Blocks[lb]
+		if !ok {
+			target.Blocks[lb] = sub
+			continue
+		}
+		for _, raw := range sub.RawOrigins {
+			errs.Append(existing.MergeBlock(raw, true))
+		}
+	}
+	return errs.AsError()
 }
 
 func parseBlockAttributes(block *ast.MergedBlock, validAttrs map[string]**ast.Attribute, errKind errors.Kind) error {

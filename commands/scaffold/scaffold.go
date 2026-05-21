@@ -331,6 +331,12 @@ func (s *Spec) Exec(ctx context.Context, cli commands.CLI) error {
 							return err
 						}
 
+						// Load bundle lets so `bundle.let.<name>` is available
+						// when evaluating scaffolding.path and scaffolding.name.
+						if err := config.LoadBundleLets(evalctx, selectedBundle.Define.Lets); err != nil {
+							return err
+						}
+
 						// Eval the bundle definition itself after the inputs have been collected to evaluate default label and path.
 						bundleDef, err := config.EvalBundleDefinition(evalctx, selectedBundle.Define)
 						if err != nil {

@@ -26,6 +26,8 @@ Given a version number `MAJOR.MINOR.PATCH`, we increment the:
 
 - Hide bundles in the `terrmate ui` promote list, if they reference other bundles that would not exist in the target environment.
   - This prevents errors that would otherwise occur once the bundle has been promoted.
+- Add support for `lets` block in bundles. Outside the `lets` block, expressions can be referenced as `bundle.let.<name>`.
+  - The block is evaluated after bundle inputs, but before exports and bundle stacks.
 
 ## 0.17.0
 
