@@ -139,8 +139,8 @@ func (r *Resolver) resolveRemote(rootdir, src string, kind Kind, allowFetch bool
 
 	pkgCacheSubdir := filepath.Join(pkgCacheDir, srcSubdir)
 
-	if _, err := os.Stat(pkgCacheSubdir); err == os.ErrNotExist {
-		return project.Path{}, errors.E(err, "source directory does not exist in repository")
+	if _, err := os.Stat(pkgCacheSubdir); errors.Is(err, os.ErrNotExist) {
+		return project.Path{}, errors.E("the source '%s' does not exist", src)
 	}
 
 	if err := fs.CopyDir(tmTempDir, pkgCacheSubdir, filterForSourceKind(kind)); err != nil {

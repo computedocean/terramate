@@ -20,6 +20,12 @@ Given a version number `MAJOR.MINOR.PATCH`, we increment the:
 - Backward compatibility in versions `0.0.z` is **not guaranteed** when `z` is increased.
 - Backward compatibility in versions `0.y.z` is **not guaranteed** when `y` is increased.
 
+## Unreleased
+
+### Fixed
+
+- Fix misleading error message when a remote bundle/component source is not found.
+
 ## 0.17.1
 
 ### Added
